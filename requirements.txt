@@ -1,0 +1,52 @@
+# Core dependencies
+python-dotenv>=1.0.0
+supabase>=2.0.0
+openai>=1.0.0
+
+# Web scraping and automation
+selenium>=4.0.0
+beautifulsoup4>=4.12.0
+deep-translator>=1.11.0
+
+# HTTP client
+httpx>=0.25.0
+requests>=2.31.0
+
+# PDF processing
+pdf2image>=1.16.0
+pytesseract>=0.3.10
+PyPDF2>=3.0.0
+pypdf>=4.0.0
+
+# Text processing and embeddings
+tiktoken>=0.5.0
+langchain-text-splitters>=0.3.0
+
+# Streamlit for web interface
+streamlit>=1.28.0
+
+# Google APIs
+google-api-python-client>=2.100.0
+google-auth>=2.20.0
+
+# Firebase
+firebase-admin>=6.0.0
+
+# System dependencies (install separately):
+# 1. Tesseract OCR: https://github.com/tesseract-ocr/tesseract
+# 2. Chrome/Chromium browser for Selenium
+# 3. ChromeDriver: https://chromedriver.chromium.org/
+#
+# Installation instructions:
+# 1. Create virtual environment: python -m venv myenv
+# 2. Activate virtual environment:
+#    - Windows: myenv\Scripts\activate
+#    - Linux/Mac: source myenv/bin/activate
+# 3. Install NumPy first: pip install numpy
+# 4. Install requirements: pip install -r requirements.txt
+
+# System dependencies note:
+# You'll also need to install:
+# - Tesseract OCR: https://github.com/tesseract-ocr/tesseract
+# - Chrome/Chromium browser for Selenium
+# - ChromeDriver: https://chromedriver.chromium.org/
