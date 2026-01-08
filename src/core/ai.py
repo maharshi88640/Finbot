@@ -292,10 +292,31 @@ class AIManager:
         except Exception as e:
             return f"Error in enhanced pypdf extraction: {e}"
 
-    def summarize_pdf(self, pdf_url: str) -> str:
-        """Summarize PDF content"""
+    def summarize_pdf(self, pdf_url: str, metadata: dict = None) -> str:
+        """Summarize PDF content with enhanced path info including branch and GR number"""
         if self.demo_mode:
             return "Demo mode: PDF summarization disabled"
+        
+        # Build enhanced path info from metadata
+        path_info = {
+            'pdf_url': pdf_url,
+            'gr_no': metadata.get('gr_no', 'Unknown') if metadata else 'Unknown',
+            'branch': metadata.get('branch', 'Unknown') if metadata else 'Unknown',
+            'subject': metadata.get('subject_en', '') if metadata else '',
+            'date': metadata.get('date', '') if metadata else '',
+            'source_page': metadata.get('source_page', '') if metadata else '',
+            'source_url': metadata.get('source_url', '') if metadata else '',
+            'route': metadata.get('navigation_route', '') if metadata else ''
+        }
+        
+        print(f"\n📄 SUMMARIZING PDF:")
+        print(f"   GR No: {path_info['gr_no']}")
+        print(f"   Branch: {path_info['branch']}")
+        print(f"   Source Page: {path_info['source_page']}")
+        print(f"   Source URL: {path_info['source_url']}")
+        print(f"   PDF URL: {pdf_url}")
+        print(f"   Route: {path_info['route']}")
+        
         text = self.process_pdf_from_url(pdf_url)
 
         # Handle large texts by chunking
@@ -321,12 +342,22 @@ class AIManager:
         # Create final summary if multiple chunks
         if len(summaries) > 1:
             combined_summaries = "\n\n".join(summaries)
-            return self.summarize_text(
+            final_summary = self.summarize_text(
                 combined_summaries,
                 "Given the summaries separated by double newlines, generate a final comprehensive summary."
             )
         else:
-            return summaries[0] if summaries else "No content found to summarize."
+            final_summary = summaries[0] if summaries else "No content found to summarize."
+
+        # Append path info to summary for reference
+        path_summary = f"\n\n---\n**Document Path Info:**\n"
+        path_summary += f"- **GR No:** {path_info['gr_no']}\n"
+        path_summary += f"- **Branch:** {path_info['branch']}\n"
+        path_summary += f"- **Date:** {path_info['date']}\n"
+        path_summary += f"- **Source Page:** {path_info['source_page']}\n"
+        path_summary += f"- **PDF URL:** {pdf_url}\n"
+        
+        return final_summary + path_summary
 
     def answer_question_from_pdf(self, pdf_url: str, question: str) -> str:
         """Answer a question based on PDF content"""

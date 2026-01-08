@@ -6,6 +6,7 @@ Handles chat functionality and tool calling
 import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from urllib.parse import urlparse, urljoin
 
 from src.core.database import DatabaseManager
 from src.core.ai import AIManager
@@ -20,6 +21,50 @@ class ChatManager:
         self.history = DatabaseChatHistoryManager()
         self.tools = self._get_tools_definition()
 
+    def _normalize_url(self, url: str) -> str:
+        """Ensure URL is absolute and has a scheme. Returns original if empty or already absolute."""
+        if not url:
+            return url
+        url = url.strip()
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.netloc:
+            return url
+
+        # If starts with // (protocol relative)
+        if url.startswith("//"):
+            return "https:" + url
+
+        # If starts with a slash, join with known base
+        base = "https://financedepartment.gujarat.gov.in"
+        if url.startswith("/"):
+            return urljoin(base, url)
+
+        # If missing scheme but has domain-like pattern, assume https
+        if "." in url and not url.startswith("http"):
+            return "https://" + url
+
+        return url
+
+    def _construct_pdf_url(self, pdf_filename: str) -> str:
+        """
+        Construct PDF URL from PDF filename.
+        Pattern: https://financedepartment.gujarat.gov.in/Documents/{filename}
+        The filename should include GR number, date, and ID (e.g., KH_1677_26-Jul-1995_806.pdf)
+        """
+        if not pdf_filename or pdf_filename == 'N/A':
+            return ''
+        
+        # Remove any existing protocol/path and keep only filename
+        filename = pdf_filename.strip()
+        if '/' in filename:
+            filename = filename.split('/')[-1]
+        if not filename.endswith('.pdf'):
+            filename = filename + '.pdf'
+        
+        # Construct full URL
+        pdf_url = f"https://financedepartment.gujarat.gov.in/Documents/{filename}"
+        return pdf_url
+
     def _get_tools_definition(self) -> List[Dict]:
         """Get tools definition for OpenAI function calling"""
         return [
@@ -33,11 +78,11 @@ class ChatManager:
                         "properties": {
                             "gr_no": {
                                 "type": "string",
-                                "description": "Government Resolution number (e.g., પગર-૧૦૨૦૨૩-૦૧-મ, STS-1096-535-Adt.07-03-1996). Can be in Gujarati or English."
+                                "description": "Government Resolution number (e.g., GR-2024-450, M_2641_17-Apr-2023)"
                             },
                             "date": {
                                 "type": "string",
-                                "description": "Document date or year (e.g., 2023-04-17, 2023, April 2023). Use for finding documents from specific time periods."
+                                "description": "Document date or year (e.g., 2023-04-17, 2023, April 2023)"
                             },
                             "branch": {
                                 "type": "string",
@@ -64,11 +109,11 @@ class ChatManager:
                                     "PMU-Cell",
                                     "GST Cell"
                                 ],
-                                "description": "Government department branch. Most common: 'M-(Pay of Government Employee)' for salary/pay matters, 'PayCell-(Pay Commission)' for pay commission orders."
+                                "description": "Government department branch"
                             },
                             "subject_en": {
                                 "type": "string",
-                                "description": "Search terms for document subject in English (e.g., 'pay scale', 'salary revision', 'allowance')"
+                                "description": "Search terms for document subject in English"
                             },
                             "subject_gu": {
                                 "type": "string",
@@ -82,13 +127,13 @@ class ChatManager:
                 "type": "function",
                 "function": {
                     "name": "get_pdf_by_content",
-                    "description": "Perform semantic search across all documents using natural language queries. Use this for broad searches or when looking for concepts rather than specific document details.",
+                    "description": "Perform semantic search across all documents using natural language queries.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "content": {
                                 "type": "string",
-                                "description": "Natural language search query (e.g., 'salary increases for government employees', 'pension benefits', 'pay commission recommendations')"
+                                "description": "Natural language search query"
                             }
                         },
                         "required": ["content"]
@@ -113,7 +158,7 @@ class ChatManager:
                 "type": "function",
                 "function": {
                     "name": "query_pdf",
-                    "description": "Answer questions based on specific PDF content when you have a document URL",
+                    "description": "Answer questions based on specific PDF content",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -128,7 +173,7 @@ class ChatManager:
                 "type": "function",
                 "function": {
                     "name": "extract_gujarati_text",
-                    "description": "Extract Gujarati text from PDF using specialized OCR. Use this when dealing with Gujarati government documents that may not extract properly with standard methods.",
+                    "description": "Extract Gujarati text from PDF using specialized OCR.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -142,7 +187,7 @@ class ChatManager:
                 "type": "function",
                 "function": {
                     "name": "get_database_overview",
-                    "description": "Get overview of available documents, branches, and recent additions. Use this to help users understand what data is available.",
+                    "description": "Get overview of available documents, branches, and recent additions.",
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -153,25 +198,84 @@ class ChatManager:
         ]
 
     def get_pdf_related_data(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Tool: Search documents in database"""
+        """Tool: Search documents in database with PDF verification"""
         try:
+            import requests
+            
             results = self.db.search_documents(args)
-            # Format results with clickable links
             formatted_results = []
+            
             for doc in results:
-                pdf_url = doc.get('pdf_url', '')
+                stored_pdf_url = doc.get('pdf_url', '')
+                pdf_valid_db = doc.get('pdf_valid', None)
+                fallback_url = doc.get('fallback_url', '')
+                navigation_route = doc.get('navigation_route', '')
                 gr_no = doc.get('gr_no', 'N/A')
                 date = doc.get('date', 'N/A')
                 branch = doc.get('branch', 'N/A')
                 subject = doc.get('subject_en', doc.get('subject_ur', 'No subject'))
+                source_page = doc.get('source_page', '')
+                source_url = doc.get('source_page_url', '')
+                
+                # Use actual stored PDF URL directly
+                pdf_url = self._normalize_url(stored_pdf_url) if stored_pdf_url else ''
+                
+                # Log the actual PDF URL for debugging
+                print(f"\n📄 PDF Link for {gr_no}: {pdf_url}")
+                
+                # Verify PDF accessibility if not already verified
+                pdf_valid = pdf_valid_db
+                verification_status = doc.get('pdf_status', '')
+                
+                if pdf_url and pdf_valid_db is None:
+                    # First time verification needed
+                    try:
+                        response = requests.head(pdf_url, timeout=5, allow_redirects=True)
+                        pdf_valid = response.status_code == 200 and 'pdf' in response.headers.get('Content-Type', '').lower()
+                        verification_status = f"Verified: HTTP {response.status_code}"
+                        print(f"   ✓ Verification: {verification_status}")
+                    except Exception as e:
+                        pdf_valid = False
+                        verification_status = f"Verification failed: {e}"
+                        print(f"   ✗ {verification_status}")
+                
+                # Build path info for frontend
+                path_info = {
+                    'gr_no': gr_no,
+                    'branch': branch,
+                    'date': date,
+                    'subject': subject,
+                    'source_page': source_page,
+                    'source_url': source_url,
+                    'pdf_url': pdf_url,
+                    'navigation_route': navigation_route,
+                    'pdf_valid': pdf_valid if pdf_valid else False,
+                    'fallback_url': fallback_url,
+                    'verification_status': verification_status
+                }
+                
+                # Always show website navigation instructions instead of direct PDF links
+                # Format: only show branch name, date, and steps to access from website
+                pdf_link = f"""📍 **Document Details:**
+
+**Branch:** {branch}
+**GR No:** {gr_no}
+**Date:** {date}
+
+**Steps to Access Document:**
+1. Go to the Finance Department website
+2. Filter by Branch: {branch}
+3. Search for GR No: {gr_no}
+4. Look for date: {date}
+5. Click on the document link to view/download
+"""
                 
                 formatted_doc = {
                     "gr_no": gr_no,
                     "date": date,
                     "branch": branch,
                     "subject": subject,
-                    "pdf_url": pdf_url,
-                    "pdf_link": f"[📄 View Document]({pdf_url})" if pdf_url else "No PDF available"
+                    "pdf_link": pdf_link
                 }
                 formatted_results.append(formatted_doc)
             
@@ -193,7 +297,10 @@ class ChatManager:
         """Tool: Summarize PDF content"""
         try:
             pdf_url = args.get("pdf_url")
-            summary = self.ai.summarize_pdf(pdf_url)
+            # Get document metadata for path info
+            docs = self.db.search_documents({"pdf_url": pdf_url})
+            metadata = docs[0] if docs else None
+            summary = self.ai.summarize_pdf(pdf_url, metadata)
             return {"summary": summary}
         except Exception as e:
             return {"error": str(e)}
@@ -223,24 +330,114 @@ class ChatManager:
             total_docs = self.db.get_documents_count()
             branches = self.db.get_branches()
 
-            # Get document count per branch
             branch_stats = {}
             for branch in branches:
                 branch_docs = self.db.get_documents_by_branch(branch)
                 branch_stats[branch] = len(branch_docs)
 
-            # Get some recent documents with links
             recent_docs = self.db.search_documents({})[:5]
             recent_summary = []
             for doc in recent_docs:
-                pdf_url = doc.get('pdf_url', '')
+                stored_pdf_url = doc.get('pdf_url', '')
+                pdf_valid_db = doc.get('pdf_valid', None)
+                fallback_url = doc.get('fallback_url', '')
+                navigation_route = doc.get('navigation_route', '')
+                source_page = doc.get('source_page', '')
+                source_url = doc.get('source_page_url', '')
+                gr_no = doc.get('gr_no', 'N/A')
+                date_val = doc.get('date', 'N/A')
+                branch = doc.get('branch', 'N/A')
+                subject = doc.get('subject_en', doc.get('subject_ur', ''))
+                
+                # Use actual stored PDF URL directly
+                stored_pdf_url = doc.get('pdf_url', '')
+                pdf_url = self._normalize_url(stored_pdf_url) if stored_pdf_url else ''
+                
+                # Log the actual PDF URL for debugging
+                print(f"\n📄 Recent PDF Link for {gr_no}: {pdf_url}")
+                
+                # Verify PDF accessibility if not already verified
+                pdf_valid = pdf_valid_db
+                verification_status = doc.get('pdf_status', '')
+                
+                if pdf_url and pdf_valid_db is None:
+                    try:
+                        import requests
+                        response = requests.head(pdf_url, timeout=5, allow_redirects=True)
+                        pdf_valid = response.status_code == 200 and 'pdf' in response.headers.get('Content-Type', '').lower()
+                        verification_status = f"Verified: HTTP {response.status_code}"
+                        print(f"   ✓ Verification: {verification_status}")
+                    except Exception as e:
+                        pdf_valid = False
+                        verification_status = f"Verification failed: {e}"
+                        print(f"   ✗ {verification_status}")
+                
+                
+                if pdf_valid and pdf_url:
+                    # Always show website navigation instructions instead of direct PDF links
+                    # Format: only show branch name, date, and steps to access from website
+                    pdf_link = f"""📍 **Document Details:**
+
+**Branch:** {branch}
+**GR No:** {gr_no}
+**Date:** {date_val}
+
+**Steps to Access Document:**
+1. Go to the Finance Department website
+2. Filter by Branch: {branch}
+3. Search for GR No: {gr_no}
+4. Look for date: {date_val}
+5. Click on the document link to view/download
+"""
+                elif fallback_url and navigation_route:
+                    pdf_link = f"""📍 **Document Details:**
+
+**Branch:** {branch}
+**GR No:** {gr_no}
+**Date:** {date_val}
+
+**Steps to Access Document:**
+1. Go to the Finance Department website
+2. Filter by Branch: {branch}
+3. Search for GR No: {gr_no}
+4. Look for date: {date_val}
+5. Click on the document link to view/download
+"""
+                elif source_url:
+                    pdf_link = f"""📍 **Document Details:**
+
+**Branch:** {branch}
+**GR No:** {gr_no}
+**Date:** {date_val}
+
+**Steps to Access Document:**
+1. Go to the Finance Department website
+2. Filter by Branch: {branch}
+3. Search for GR No: {gr_no}
+4. Look for date: {date_val}
+5. Click on the document link to view/download
+"""
+                else:
+                    pdf_link = f"""📍 **Document Details:**
+
+**Branch:** {branch}
+**GR No:** {gr_no}
+**Date:** {date_val}
+
+**Steps to Access Document:**
+1. Go to the Finance Department website
+2. Filter by Branch: {branch}
+3. Search for GR No: {gr_no}
+4. Look for date: {date_val}
+5. Click on the document link to view/download
+"""
+                
                 recent_summary.append({
                     "gr_no": doc.get("gr_no", "N/A"),
                     "date": doc.get("date", "N/A"),
                     "branch": doc.get("branch", "N/A"),
                     "subject": doc.get("subject_en", doc.get("subject_ur", "N/A"))[:100] + "..." if len(doc.get("subject_en", doc.get("subject_ur", ""))) > 100 else doc.get("subject_en", doc.get("subject_ur", "N/A")),
-                    "pdf_url": pdf_url,
-                    "pdf_link": f"[📄 View PDF]({pdf_url})" if pdf_url else "No PDF available"
+                    "pdf_link": pdf_link
                 })
 
             return {
@@ -289,11 +486,9 @@ class ChatManager:
         if chat_history is None:
             chat_history = []
 
-        # Save user message to persistent history
         if save_to_history:
             self.history.save_message("user", user_message)
 
-        # Add system context
         total_docs = self.db.get_documents_count()
         branches = self.db.get_branches()
         system_prompt = f"""
@@ -315,15 +510,32 @@ class ChatManager:
         6. Find related documents on similar topics
 
         RESPONSE FORMATTING - VERY IMPORTANT:
-        - When showing search results, ALWAYS include the PDF link using markdown format: [📄 View Document](URL)
-        - Format each document as:
-          **GR No:** [GR_NUMBER](PDF_URL)
-          **Date:** DATE
-          **Branch:** BRANCH
-          **Subject:** SUBJECT
-          **Link:** [📄 View PDF](PDF_URL)
-        - Always make document links clickable and prominent
-        - If multiple documents are found, list them as a numbered list with full details
+        When showing search results, NEVER show direct PDF links. Instead, show only:
+        
+        1. **GR No:** GR_NUMBER
+           **Branch:** BRANCH
+           **Date:** DATE
+           
+           Steps to access:
+           1. Go to the Finance Department website
+           2. Filter by Branch: [BRANCH_NAME]
+           3. Search for GR No: [GR_NUMBER]
+           4. Look for date: [DATE]
+           5. Click on the document link to view/download
+        
+        Example format:
+        I found the following documents:
+
+        1. **GR No:** M_2641_17-Apr-2023_450
+           **Branch:** M-(Pay of Government Employee)
+           **Date:** 17-Apr-2023
+           
+           Steps to access:
+           1. Go to the Finance Department website
+           2. Filter by Branch: M-(Pay of Government Employee)
+           3. Search for GR No: M_2641_17-Apr-2023_450
+           4. Look for date: 17-Apr-2023
+           5. Click on the document link to view/download
 
         TEXT EXTRACTION FEATURES:
         - Enhanced pypdf extraction with better Unicode handling for Gujarati
@@ -339,30 +551,7 @@ class ChatManager:
         - If documents are in Gujarati, provide English summaries
         - For pay-related queries, focus on salary scales, allowances, and policy changes
         - When multiple documents are found, prioritize by relevance and recency
-        - If text extraction seems garbled, explain that OCR installation may improve results
-
-        SAMPLE QUERIES YOU CAN HANDLE:
-        - "Find documents about pay scale revisions"
-        - "Extract Gujarati text from this PDF: [URL]"
-        - "Show me recent government orders from Pay Commission"
-        - "What are the latest salary policies for government employees?"
-        - "Find documents from 2023 about employee benefits"
-        - "Search for GR number"
-
-        EXAMPLE OF GOOD RESPONSE FORMAT:
-        I found the following documents:
-
-        1. **GR No:** M_2641_17-Apr-2023_450
-           **Date:** 2023-04-17
-           **Branch:** M-(Pay of Government Employee)
-           **Subject:** Pay scale revision for government employees
-           **Link:** [📄 View PDF](https://financedepartment.gujarat.gov.in/...)
-
-        2. **GR No:** PayCell_2863_02-Apr-2025_231
-           **Date:** 2025-04-02
-           **Branch:** PayCell-(Pay Commission)
-           **Subject:** Pay commission recommendations
-           **Link:** [📄 View PDF](https://financedepartment.gujarat.gov.in/...)
+        - If PDF is not directly accessible, clearly show the navigation route to help users find it manually
 
         Always provide helpful, accurate, and well-structured responses based on the available documents.
         """
@@ -370,18 +559,14 @@ class ChatManager:
         messages = [{"role": "system", "content": system_prompt}] + chat_history
         messages.append({"role": "user", "content": user_message})
 
-        # Process with function calling
         retry_count = 0
         max_retries = 2
         
         while retry_count < max_retries:
             response = self.ai.chat_completion(messages, self.tools)
             
-            # Handle case where response is None or dict (error marker)
             if response is None or (isinstance(response, dict) and response.get("error_type")):
-                # Handle quota exceeded error
                 if isinstance(response, dict) and response.get("error_type") == "quota_exceeded":
-                    # Try to get database info and provide a fallback response
                     try:
                         total_docs = self.db.get_documents_count()
                         branches = self.db.get_branches()
@@ -414,34 +599,28 @@ Please try searching for a specific document or let me know what you're looking 
                             self.history.save_message("assistant", error_msg)
                         return error_msg
                 
-                # Handle auth error
                 if isinstance(response, dict) and response.get("error_type") == "auth_error":
                     error_msg = "OpenAI API authentication failed. Please check your API key in the .env file."
                     if save_to_history:
                         self.history.save_message("assistant", error_msg)
                     return error_msg
                 
-                # Generic error for None response
                 error_msg = "Failed to get response from AI. Please check your API credentials and try again."
                 if save_to_history:
                     self.history.save_message("assistant", error_msg)
                 return error_msg
             
-            # Add assistant message to history
             messages.append({
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [tool_call.model_dump() for tool_call in response.tool_calls] if response.tool_calls else None
             })
 
-            # Return if no tool calls
             if not response.tool_calls:
-                # Save assistant response to persistent history
                 if save_to_history:
                     self.history.save_message("assistant", response.content)
                 return response.content
 
-            # Execute tool calls
             for tool_call in response.tool_calls:
                 tool_response = self.call_tool(tool_call)
                 messages.append({
@@ -452,7 +631,6 @@ Please try searching for a specific document or let me know what you're looking 
             
             retry_count += 1
         
-        # If we exhausted retries
         error_msg = "Unable to process your request. Please try again."
         if save_to_history:
             self.history.save_message("assistant", error_msg)
@@ -465,8 +643,6 @@ Please try searching for a specific document or let me know what you're looking 
             "branches": self.db.get_branches(),
             "timestamp": datetime.now().isoformat()
         }
-
-    # Chat History Management Methods
 
     def create_new_session(self, name: str = None) -> str:
         """Create a new chat session"""
@@ -504,3 +680,4 @@ Please try searching for a specific document or let me know what you're looking 
     def get_history_stats(self) -> Dict[str, Any]:
         """Get chat history statistics"""
         return self.history.get_session_stats()
+

@@ -76,6 +76,33 @@ class DatabaseManager:
         result = self.supabase.table("documents").select("*").eq("id", doc_id).execute()
         return result.data[0] if result.data else None
 
+    def update_document(self, document: Dict[str, Any]) -> bool:
+        """Update a document in the database"""
+        if self.demo_mode:
+            return False
+        try:
+            # Build update data - only update fields that are provided
+            update_data = {}
+            
+            if 'gr_no' in document:
+                update_data['gr_no'] = document['gr_no']
+            if 'pdf_valid' in document:
+                update_data['pdf_valid'] = document['pdf_valid']
+            if 'pdf_status' in document:
+                update_data['pdf_status'] = document['pdf_status']
+            if 'verification_date' in document:
+                update_data['verification_date'] = document['verification_date']
+            
+            if not update_data:
+                return False
+                
+            # Update by gr_no (assuming gr_no is unique or we update all matching)
+            self.supabase.table("documents").update(update_data).eq("gr_no", document['gr_no']).execute()
+            return True
+        except Exception as e:
+            print(f"Error updating document: {e}")
+            return False
+
     def search_by_content(self, query_embedding: List[float], threshold: float = 0.78, limit: int = 10) -> List[Dict[str, Any]]:
         """Search documents by content similarity"""
         if self.demo_mode:
